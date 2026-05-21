@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Podomètre adaptatif</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0d0d0d; --surface: #1a1a1a; --border: rgba(255,255,255,0.08);
+    --text: #f0f0f0; --muted: #888; --accent: #00e5a0;
+    --grand: #f5c842; --petit: #4d9fff; --reject: #ff4444; --aberrant: #aa00ff;
+  }
+  body { background: var(--bg); color: var(--text); font-family: 'Courier New', monospace; padding: 14px; font-size: 13px; }
+  h1 { font-size: 14px; font-weight: normal; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); margin-bottom: 14px; }
+
+  /* Big counters */
+  .big-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
+  .big-box { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 8px; text-align: center; }
+  .big-box .lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+  .big-box .val { font-size: 32px; font-weight: bold; color: var(--accent); font-family: 'Courier New', monospace; }
+  .big-box.cad .val { font-size: 24px; color: var(--grand); }
+  .big-box.gp .val { font-size: 20px; color: var(--petit); }
+
+  /* Small stats */
+  .small-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 14px; }
+  .small-box { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 4px; text-align: center; }
+  .small-box .lbl { font-size: 9px; color: var(--muted); text-transform: uppercase; margin-bottom: 2px; }
+  .small-box .val { font-size: 13px; font-weight: bold; }
+
+  .chart-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 14px; height: 160px; position: relative; }
+
+  .state-display { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 14px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
+  .state-display .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+  .state-display .val { font-size: 13px; font-weight: bold; }
+  .state-pause { color: var(--muted); }
+  .state-demarrage { color: var(--grand); }
+  .state-marche { color: var(--accent); }
+
+  .ctrl-box { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; }
+  .ctrl-box label { font-size: 10px; color: var(--muted); text-transform: uppercase; display: block; margin-bottom: 4px; }
+  .slider-row { display: flex; align-items: center; gap: 8px; }
+  input[type=range] { flex: 1; accent-color: var(--accent); }
+  .slider-val { font-size: 12px; color: var(--accent); min-width: 50px; text-align: right; }
+
+  .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 12px; margin-bottom: 10px; }
+  button { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-family: 'Courier New', monospace; font-size: 12px; text-transform: uppercase; padding: 12px 8px; cursor: pointer; }
+  button:disabled { opacity: 0.3; }
+  button.success { border-color: var(--accent); color: var(--accent); }
+  button.danger { border-color: var(--reject); color: var(--reject); }
+
+  .log-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; max-height: 90px; overflow-y: auto; font-size: 10px; color: var(--muted); line-height: 1.6; }
+  .log-panel .ts { color: var(--accent); margin-right: 4px; }
+
+  details { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
+  details summary { font-size: 11px; color: var(--muted); text-transform: uppercase; cursor: pointer; letter-spacing: 0.08em; }
+  details[open] { padding-bottom: 4px; }
+</style>
+</head>
+<body>
+
+<h1>&#9632; Podomètre adaptatif</h1>
+
+<!-- Compteurs principaux -->
+<div class="big-stats">
+  <div class="big-box"><div class="lbl">Pas</div><div class="val" id="nbPas">0</div></div>
+  <div class="big-box cad"><div class="lbl">Cadence</div><div class="val" id="cadence">— /min</div></div>
+  <div class="big-box gp"><div class="lbl">Grand / Petit</div><div class="val" id="ratio">0 / 0</div></div>
+</div>
+
+<!-- État de la machine -->
+<div class="state-display">
+  <span class="lbl">État algorithme</span>
+  <span class="val state-pause" id="etat">en attente</span>
+</div>
+
+<!-- Stats secondaires -->
+<div class="small-stats">
+  <div class="small-box"><div class="lbl">Signal Y</div><div class="val" id="vSig">0.00</div></div>
+  <div class="small-box"><div class="lbl">Seuil</div><div class="val" id="vSeuil" style="color:var(--reject);">—</div></div>
+  <div class="small-box"><div class="lbl">Rejets</div><div class="val" id="nbRej" style="color:var(--reject);">0</div></div>
+  <div class="small-box"><div class="lbl">Aberr.</div><div class="val" id="nbAber" style="color:var(--aberrant);">0</div></div>
+</div>
+
+<!-- Graphique temps réel -->
+<div class="chart-wrap">
+  <canvas id="chart" role="img" aria-label="Signal Y filtré en temps réel">Signal en temps réel.</canvas>
+</div>
+
+<!-- Paramètres -->
+<details>
+  <summary>Paramètres adaptatifs</summary>
+  <div style="margin-top:10px;">
+    <div class="ctrl-box">
+      <label>Filtre passe-bande basse (Hz)</label>
+      <div class="slider-row">
+        <input type="range" id="freqBasseSlider" min="0.5" max="2.5" step="0.1" value="1.5" oninput="updateParam('freqBasse', this.value, 'Hz')">
+        <span class="slider-val" id="freqBasseVal">1.5 Hz</span>
+      </div>
+    </div>
+    <div class="ctrl-box">
+      <label>Filtre passe-bande haute (Hz)</label>
+      <div class="slider-row">
+        <input type="range" id="freqHauteSlider" min="2.0" max="6.0" step="0.1" value="2.2" oninput="updateParam('freqHaute', this.value, 'Hz')">
+        <span class="slider-val" id="freqHauteVal">2.2 Hz</span>
+      </div>
+    </div>
+    <div class="ctrl-box">
+      <label>Seuil absolu minimum</label>
+      <div class="slider-row">
+        <input type="range" id="seuilAbsSlider" min="0.1" max="1.0" step="0.05" value="0.3" oninput="updateParam('seuilAbs', this.value, '')">
+        <span class="slider-val" id="seuilAbsVal">0.30</span>
+      </div>
+    </div>
+    <div class="ctrl-box">
+      <label>Facteur aberrant (× moyenne)</label>
+      <div class="slider-row">
+        <input type="range" id="aberSlider" min="1.5" max="4.0" step="0.1" value="2.0" oninput="updateParam('facteurAberrant', this.value, '×')">
+        <span class="slider-val" id="aberVal">2.0×</span>
+      </div>
+    </div>
+    <div class="ctrl-box">
+      <label>Délai max (pause) en s</label>
+      <div class="slider-row">
+        <input type="range" id="delaiMaxSlider" min="0.8" max="3.0" step="0.1" value="1.5" oninput="updateParam('delaiMax', this.value, 's')">
+        <span class="slider-val" id="delaiMaxVal">1.5 s</span>
+      </div>
+    </div>
+  </div>
+</details>
+
+<!-- Boutons -->
+<div class="buttons">
+  <button id="btnStart" onclick="startSensor()">&#9654; Démarrer</button>
+  <button id="btnReset" onclick="resetCounter()" disabled>&#8634; Reset</button>
+</div>
+
+<!-- Log -->
+<div class="log-panel" id="log">
+  <div><span class="ts">&gt;</span> Clique Démarrer pour activer le podomètre</div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════
+// PARAMÈTRES
+// ════════════════════════════════════════════════════════════
+const params = {
+  freqBasse:        1.5,
+  freqHaute:        2.2,
+  ordre:            2,
+  bufferN:          6,
+  seuilAbs:         0.3,
+  delaiRatioMin:    0.40,
+  delaiFallback:    0.25,
+  delaiMax:         1.5,
+  nDemarrage:       3,
+  facteurAberrant:  2.0,
+};
+
+// ════════════════════════════════════════════════════════════
+// FILTRE BUTTERWORTH PASSE-BANDE (ordre 2)
+// Implémentation IIR temps réel — utilise les 2 derniers
+// échantillons d'entrée et de sortie.
+// ════════════════════════════════════════════════════════════
+class ButterworthBandpass {
+  constructor(lowHz, highHz, fs) {
+    this.recalculate(lowHz, highHz, fs);
+    this.x = [0, 0, 0];  // entrées
+    this.y = [0, 0, 0];  // sorties
+  }
+
+  recalculate(lowHz, highHz, fs) {
+    // Coefficients Butterworth passe-bande ordre 2
+    // Formules standard issues du Audio EQ Cookbook (RBJ)
+    const f0 = Math.sqrt(lowHz * highHz);
+    const bw = highHz - lowHz;
+    const Q  = f0 / bw;
+    const w0 = 2 * Math.PI * f0 / fs;
+    const alpha = Math.sin(w0) / (2 * Q);
+    const cosW0 = Math.cos(w0);
+
+    const b0 =   alpha;
+    const b1 =   0;
+    const b2 =  -alpha;
+    const a0 =   1 + alpha;
+    const a1 =  -2 * cosW0;
+    const a2 =   1 - alpha;
+
+    this.b = [b0/a0, b1/a0, b2/a0];
+    this.a = [1, a1/a0, a2/a0];
+  }
+
+  process(input) {
+    this.x[2] = this.x[1]; this.x[1] = this.x[0]; this.x[0] = input;
+    const out = this.b[0]*this.x[0] + this.b[1]*this.x[1] + this.b[2]*this.x[2]
+              - this.a[1]*this.y[0] - this.a[2]*this.y[1];
+    this.y[2] = this.y[1]; this.y[1] = this.y[0]; this.y[0] = out;
+    return out;
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// ÉTAT DE L'ALGORITHME
+// ════════════════════════════════════════════════════════════
+let filtre = null;
+let freqEchant = 50;
+let echantillonsRecus = 0;
+
+// Buffers circulaires
+let bufferAmplitudes = [];
+let bufferPeriodes   = [];
+
+// État machine
+let etat = 'demarrage';  // demarrage | marche
+let picsAttente = [];
+
+// Détection de pic (besoin de 3 échantillons)
+let sig_n2 = 0, sig_n1 = 0;
+let t_n2 = 0, t_n1 = 0;
+
+// Dernier pas
+let dernierPicT  = -999;
+let dernierType  = null;
+
+// Statistiques
+let nbGrands     = 0;
+let nbPetits     = 0;
+let nbRejets     = 0;
+let nbAberrants  = 0;
+
+// Moyenne mobile pour cadence
+let derniersPasT = [];
+
+// Graphique
+const MAX_PTS = 100;
+let chart = null;
+let dataSignal = [];
+let dataSeuil  = [];
+
+// ════════════════════════════════════════════════════════════
+// INITIALISATION DU GRAPHIQUE
+// ════════════════════════════════════════════════════════════
+function initChart() {
+  const ctx = document.getElementById('chart').getContext('2d');
+  const emptyArr = () => Array(MAX_PTS).fill(null);
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: emptyArr(),
+      datasets: [
+        { label: 'Signal',  data: emptyArr(), borderColor: '#00e5a0', borderWidth: 1.3, pointRadius: 0, tension: 0.2, fill: false },
+        { label: 'Seuil',   data: emptyArr(), borderColor: '#ff6b4d', borderWidth: 1.0, pointRadius: 0, tension: 0,   fill: false, borderDash: [4,4] },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false },
+        y: { suggestedMin: -5, suggestedMax: 5, grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#666', font: { size: 9 } } }
+      }
+    }
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+// FONCTIONS UTILITAIRES ALGORITHME
+// ════════════════════════════════════════════════════════════
+function median(arr) {
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid];
+}
+
+function mean(arr) {
+  if (arr.length === 0) return 0;
+  return arr.reduce((a, b) => a + b, 0) / arr.length;
+}
+
+function calculerSeuil(buffer) {
+  if (buffer.length === 0) return 1.0;
+  const med = median(buffer);
+  const grands = buffer.filter(v => v >= med);
+  const petits = buffer.filter(v => v <  med);
+  if (grands.length > 0 && petits.length > 0) {
+    return (mean(grands) + mean(petits)) / 2;
+  }
+  return med * 0.7;
+}
+
+function estAberrant(val, buffer) {
+  const moy = mean(buffer);
+  return val > params.facteurAberrant * moy;
+}
+
+function pushBuffer(buffer, val, maxLen) {
+  buffer.push(val);
+  if (buffer.length > maxLen) buffer.shift();
+}
+
+// ════════════════════════════════════════════════════════════
+// COEUR DE L'ALGORITHME — appelé à chaque échantillon filtré
+// ════════════════════════════════════════════════════════════
+function traiterEchantillon(t, valFiltree) {
+  // Mise à jour graphique
+  const seuilCourant = bufferAmplitudes.length > 0 ? calculerSeuil(bufferAmplitudes) : null;
+  chart.data.datasets[0].data.push(valFiltree);
+  chart.data.datasets[1].data.push(seuilCourant);
+  if (chart.data.datasets[0].data.length > MAX_PTS) {
+    chart.data.datasets[0].data.shift();
+    chart.data.datasets[1].data.shift();
+  }
+
+  document.getElementById('vSig').textContent = valFiltree.toFixed(2);
+  if (seuilCourant !== null) {
+    document.getElementById('vSeuil').textContent = seuilCourant.toFixed(2);
+  }
+
+  // ─── Détection de maximum local (sur 3 échantillons) ────
+  echantillonsRecus++;
+  if (echantillonsRecus < 3) {
+    sig_n2 = sig_n1; sig_n1 = valFiltree;
+    t_n2 = t_n1; t_n1 = t;
+    return;
+  }
+
+  const sig_actuel = sig_n1;  // on évalue l'échantillon du milieu
+  const t_actuel   = t_n1;
+  const estMaxLocal = (sig_n1 >= sig_n2 && sig_n1 >= valFiltree);
+
+  // Décale les échantillons pour le prochain tour
+  sig_n2 = sig_n1; sig_n1 = valFiltree;
+  t_n2 = t_n1; t_n1 = t;
+
+  if (!estMaxLocal) return;
+  if (sig_actuel < params.seuilAbs) return;
+
+  // ─── Délai minimum adaptatif ────────────────────────────
+  let delaiMin;
+  if (bufferPeriodes.length >= 2) {
+    delaiMin = mean(bufferPeriodes) * params.delaiRatioMin;
+  } else {
+    delaiMin = params.delaiFallback;
+  }
+
+  const dt = dernierPicT > 0 ? t_actuel - dernierPicT : 999;
+  if (dt < delaiMin) return;
+
+  // ─── Détection de pause ─────────────────────────────────
+  if (dernierPicT > 0 && dt > params.delaiMax) {
+    etat = 'demarrage';
+    picsAttente = [];
+    dernierType = null;
+    addLog('Pause détectée — reset démarrage');
+  }
+
+  // ─── Détection de pic aberrant ──────────────────────────
+  if (bufferAmplitudes.length >= 3 && estAberrant(sig_actuel, bufferAmplitudes)) {
+    nbAberrants++;
+    document.getElementById('nbAber').textContent = nbAberrants;
+    dernierPicT = t_actuel;
+    return;
+  }
+
+  // ─── Classification ─────────────────────────────────────
+  const seuil = calculerSeuil(bufferAmplitudes);
+  const typePic = sig_actuel >= seuil ? 'G' : 'P';
+
+  // ─── Machine à états ────────────────────────────────────
+  if (etat === 'demarrage') {
+    // Mode démarrage : on accumule
+    if (picsAttente.length > 0 && picsAttente[picsAttente.length - 1].type === typePic) {
+      // Cassure d'alternance → on repart
+      picsAttente = [{ t: t_actuel, val: sig_actuel, type: typePic }];
+    } else {
+      picsAttente.push({ t: t_actuel, val: sig_actuel, type: typePic });
+    }
+
+    pushBuffer(bufferAmplitudes, sig_actuel, params.bufferN);
+    dernierPicT = t_actuel;
+    dernierType = typePic;
+
+    if (picsAttente.length >= params.nDemarrage) {
+      // Validation rétroactive
+      picsAttente.forEach(p => validerPas(p.t, p.val, p.type));
+      etat = 'marche';
+      picsAttente = [];
+      addLog('Démarrage validé — passage en mode marche');
+    }
+  }
+  else if (etat === 'marche') {
+    if (typePic !== dernierType) {
+      // Alternance respectée
+      validerPas(t_actuel, sig_actuel, typePic);
+      pushBuffer(bufferAmplitudes, sig_actuel, params.bufferN);
+      pushBuffer(bufferPeriodes, dt, params.bufferN);
+      dernierPicT = t_actuel;
+      dernierType = typePic;
+    } else {
+      // Faux positif — même type que précédent
+      nbRejets++;
+      document.getElementById('nbRej').textContent = nbRejets;
+      pushBuffer(bufferAmplitudes, sig_actuel, params.bufferN);
+      dernierPicT = t_actuel;
+    }
+  }
+
+  majAffichage();
+}
+
+function validerPas(t, val, type) {
+  if (type === 'G') nbGrands++;
+  else nbPetits++;
+  derniersPasT.push(t);
+  if (derniersPasT.length > 10) derniersPasT.shift();
+}
+
+function majAffichage() {
+  const total = nbGrands + nbPetits;
+  document.getElementById('nbPas').textContent = total;
+  document.getElementById('ratio').textContent = nbGrands + ' / ' + nbPetits;
+
+  // Cadence basée sur les 10 derniers pas
+  if (derniersPasT.length >= 2) {
+    const duree = derniersPasT[derniersPasT.length - 1] - derniersPasT[0];
+    const cad = (derniersPasT.length - 1) / duree * 60;
+    document.getElementById('cadence').textContent = cad.toFixed(0) + ' /min';
+  }
+
+  // État
+  const elEtat = document.getElementById('etat');
+  elEtat.className = 'val state-' + etat;
+  elEtat.textContent = etat === 'demarrage' ? 'démarrage (' + picsAttente.length + '/' + params.nDemarrage + ')' : 'marche';
+}
+
+// ════════════════════════════════════════════════════════════
+// GESTION DU CAPTEUR
+// ════════════════════════════════════════════════════════════
+let lastEventTime = 0;
+let freqSamples   = [];
+let yMoyenne      = 0;
+let yMoyenneN     = 0;
+
+function onMotion(e) {
+  const now = performance.now();
+  const t   = now / 1000;
+
+  // Mesure fréquence réelle
+  if (lastEventTime > 0) {
+    const dt_ms = now - lastEventTime;
+    freqSamples.push(1000 / dt_ms);
+    if (freqSamples.length > 30) freqSamples.shift();
+  }
+  lastEventTime = now;
+
+  // Récupère Y
+  const aGrav = e.accelerationIncludingGravity;
+  const aPure = e.acceleration;
+  let yVal = 0;
+
+  if (aGrav && aGrav.y !== null) {
+    yVal = aGrav.y || 0;
+  } else if (aPure && aPure.y !== null) {
+    yVal = aPure.y || 0;
+  } else {
+    return;
+  }
+
+  // Centrage adaptatif (retire la moyenne mobile pour enlever la gravité)
+  yMoyenneN++;
+  yMoyenne += (yVal - yMoyenne) / Math.min(yMoyenneN, 500);
+  const yCentre = yVal - yMoyenne;
+
+  // Filtrage passe-bande
+  if (filtre === null) {
+    if (freqSamples.length < 10) return;  // attend une estimation de fréquence
+    freqEchant = mean(freqSamples);
+    filtre = new ButterworthBandpass(params.freqBasse, params.freqHaute, freqEchant);
+    addLog('Filtre initialisé à ' + freqEchant.toFixed(0) + ' Hz');
+  }
+
+  const valFiltree = filtre.process(yCentre);
+  traiterEchantillon(t, valFiltree);
+
+  // Mise à jour du graphique
+  if (echantillonsRecus % 3 === 0) {
+    chart.update('none');
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// CONTROLES UI
+// ════════════════════════════════════════════════════════════
+function addLog(msg) {
+  const panel = document.getElementById('log');
+  const now = new Date().toTimeString().slice(0, 8);
+  const div = document.createElement('div');
+  div.innerHTML = '<span class="ts">' + now + '</span>' + msg;
+  panel.insertBefore(div, panel.firstChild);
+}
+
+function updateParam(name, value, unit) {
+  params[name] = parseFloat(value);
+  document.getElementById(name + 'Slider').nextElementSibling
+    ? null : null;
+  const valSpan = document.getElementById(
+    name.replace('freqBasse','freqBasse').replace('freqHaute','freqHaute')
+        .replace('seuilAbs','seuilAbs').replace('facteurAberrant','aber')
+        .replace('delaiMax','delaiMax') + 'Val'
+  );
+  if (valSpan) {
+    if (unit === '×') valSpan.textContent = parseFloat(value).toFixed(1) + '×';
+    else if (unit) valSpan.textContent = parseFloat(value).toFixed(unit === 'Hz' ? 1 : 2) + ' ' + unit;
+    else valSpan.textContent = parseFloat(value).toFixed(2);
+  }
+
+  // Recalcule le filtre si fréquences changées
+  if ((name === 'freqBasse' || name === 'freqHaute') && filtre) {
+    filtre.recalculate(params.freqBasse, params.freqHaute, freqEchant);
+  }
+}
+
+function resetCounter() {
+  nbGrands = nbPetits = nbRejets = nbAberrants = 0;
+  bufferAmplitudes = [];
+  bufferPeriodes = [];
+  picsAttente = [];
+  derniersPasT = [];
+  etat = 'demarrage';
+  dernierPicT = -999;
+  dernierType = null;
+  yMoyenne = 0;
+  yMoyenneN = 0;
+
+  document.getElementById('nbPas').textContent = 0;
+  document.getElementById('cadence').textContent = '— /min';
+  document.getElementById('ratio').textContent = '0 / 0';
+  document.getElementById('nbRej').textContent = 0;
+  document.getElementById('nbAber').textContent = 0;
+  addLog('Compteurs remis à zéro');
+}
+
+async function startSensor() {
+  if (typeof DeviceMotionEvent === 'undefined') {
+    addLog('ERREUR: DeviceMotionEvent absent');
+    return;
+  }
+  if (typeof DeviceMotionEvent.requestPermission === 'function') {
+    try {
+      const res = await DeviceMotionEvent.requestPermission();
+      if (res !== 'granted') { addLog('Permission refusée'); return; }
+    } catch (e) { addLog('Erreur: ' + e.message); return; }
+  }
+  window.addEventListener('devicemotion', onMotion, { passive: true });
+  addLog('Capteur démarré — marche pour calibrer');
+
+  document.getElementById('btnStart').textContent = '✓ Actif';
+  document.getElementById('btnStart').classList.add('success');
+  document.getElementById('btnStart').disabled = true;
+  document.getElementById('btnReset').disabled = false;
+}
+
+// Init
+initChart();
+</script>
+</body>
+</html>
